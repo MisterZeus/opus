@@ -50,6 +50,8 @@ extern "C" {
 #define CELTDecoder OpusCustomDecoder
 #define CELTMode OpusCustomMode
 
+#define LEAK_BANDS 19
+
 typedef struct {
    int valid;
    float tonality;
@@ -57,8 +59,12 @@ typedef struct {
    float noisiness;
    float activity;
    float music_prob;
+   float music_prob_min;
+   float music_prob_max;
    int   bandwidth;
    float activity_probability;
+   /* Store as Q6 char to save space. */
+   unsigned char leak_boost[LEAK_BANDS];
 } AnalysisInfo;
 
 typedef struct {
@@ -73,9 +79,6 @@ typedef struct {
 #define __celt_check_silkinfo_ptr(ptr) ((ptr) + ((ptr) - (const SILKInfo*)(ptr)))
 
 /* Encoder/decoder Requests */
-
-/* Expose this option again when variable framesize actually works */
-#define OPUS_FRAMESIZE_VARIABLE              5010 /**< Optimize the frame size dynamically */
 
 
 #define CELT_SET_PREDICTION_REQUEST    10002
