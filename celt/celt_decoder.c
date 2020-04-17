@@ -51,6 +51,14 @@
 #include "celt_lpc.h"
 #include "vq.h"
 
+/* The maximum pitch lag to allow in the pitch-based PLC. It's possible to save
+   CPU time in the PLC pitch search by making this smaller than MAX_PERIOD. The
+   current value corresponds to a pitch of 66.67 Hz. */
+#define PLC_PITCH_LAG_MAX (720)
+/* The minimum pitch lag to allow in the pitch-based PLC. This corresponds to a
+   pitch of 480 Hz. */
+#define PLC_PITCH_LAG_MIN (100)
+
 #if defined(SMALL_FOOTPRINT) && defined(FIXED_POINT)
 #define NORM_ALIASING_HACK
 #endif
@@ -100,6 +108,44 @@ struct OpusCustomDecoder {
    /* opus_val16 oldLogE2[], Size = 2*mode->nbEBands */
    /* opus_val16 backgroundLogE[], Size = 2*mode->nbEBands */
 };
+
+#if defined(ENABLE_HARDENING) || defined(ENABLE_ASSERTIONS)
+/* Make basic checks on the CELT state to ensure we don't end
+   up writing all over memory. */
+void validate_celt_decoder(CELTDecoder *st)
+{
+#ifndef CUSTOM_MODES
+   celt_assert(st->mode == opus_custom_mode_create(48000, 960, NULL));
+   celt_assert(st->overlap == 120);
+   celt_assert(st->end <= 21);
+#else
+/* From Section 4.3 in the spec: "The normal CELT layer uses 21 of those bands,
+   though Opus Custom (see Section 6.2) may use a different number of bands"
+
+   Check if it's within the maximum number of Bark frequency bands instead */
+   celt_assert(st->end <= 25);
+#endif
+   celt_assert(st->channels == 1 || st->channels == 2);
+   celt_assert(st->stream_channels == 1 || st->stream_channels == 2);
+   celt_assert(st->downsample > 0);
+   celt_assert(st->start == 0 || st->start == 17);
+   celt_assert(st->start < st->end);
+#ifdef OPUS_ARCHMASK
+   celt_assert(st->arch >= 0);
+   celt_assert(st->arch <= OPUS_ARCHMASK);
+#endif
+   celt_assert(st->last_pitch_index <= PLC_PITCH_LAG_MAX);
+   celt_assert(st->last_pitch_index >= PLC_PITCH_LAG_MIN || st->last_pitch_index == 0);
+   celt_assert(st->postfilter_period < MAX_PERIOD);
+   celt_assert(st->postfilter_period >= COMBFILTER_MINPERIOD || st->postfilter_period == 0);
+   celt_assert(st->postfilter_period_old < MAX_PERIOD);
+   celt_assert(st->postfilter_period_old >= COMBFILTER_MINPERIOD || st->postfilter_period_old == 0);
+   celt_assert(st->postfilter_tapset <= 2);
+   celt_assert(st->postfilter_tapset >= 0);
+   celt_assert(st->postfilter_tapset_old <= 2);
+   celt_assert(st->postfilter_tapset_old >= 0);
+}
+#endif
 
 int celt_decoder_get_size(int channels)
 {
@@ -164,7 +210,7 @@ OPUS_CUSTOM_NOSTATIC int opus_custom_decoder_init(CELTDecoder *st, const CELTMod
    st->start = 0;
    st->end = st->mode->effEBands;
    st->signalling = 1;
-#ifdef ENABLE_UPDATE_DRAFT
+#ifndef DISABLE_UPDATE_DRAFT
    st->disable_inv = channels == 1;
 #else
    st->disable_inv = 0;
@@ -436,14 +482,6 @@ static void tf_decode(int start, int end, int isTransient, int *tf_res, int LM, 
       tf_res[i] = tf_select_table[LM][4*isTransient+2*tf_select+tf_res[i]];
    }
 }
-
-/* The maximum pitch lag to allow in the pitch-based PLC. It's possible to save
-   CPU time in the PLC pitch search by making this smaller than MAX_PERIOD. The
-   current value corresponds to a pitch of 66.67 Hz. */
-#define PLC_PITCH_LAG_MAX (720)
-/* The minimum pitch lag to allow in the pitch-based PLC. This corresponds to a
-   pitch of 480 Hz. */
-#define PLC_PITCH_LAG_MIN (100)
 
 static int celt_plc_pitch_search(celt_sig *decode_mem[2], int C, int arch)
 {
@@ -832,6 +870,7 @@ int celt_decode_with_ec(CELTDecoder * OPUS_RESTRICT st, const unsigned char *dat
    const opus_int16 *eBands;
    ALLOC_STACK;
 
+   VALIDATE_CELT_DECODER(st);
    mode = st->mode;
    nbEBands = mode->nbEBands;
    overlap = mode->overlap;
@@ -1026,7 +1065,7 @@ int celt_decode_with_ec(CELTDecoder * OPUS_RESTRICT st, const unsigned char *dat
    ALLOC(pulses, nbEBands, int);
    ALLOC(fine_priority, nbEBands, int);
 
-   codedBands = compute_allocation(mode, start, end, offsets, cap,
+   codedBands = clt_compute_allocation(mode, start, end, offsets, cap,
          alloc_trim, &intensity, &dual_stereo, bits, &balance, pulses,
          fine_quant, fine_priority, C, LM, dec, 0, 0, 0);
 
